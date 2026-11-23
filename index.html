@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>도면 증강 4D 뷰어 (시험판)</title>
+<style>
+  :root{--bg:#0e141c;--panel:rgba(16,24,34,.86);--ink:#eef2f6;--muted:#9fb0c2;--line:#33475c;--accent:#4f9cff;--ok:#3ecf8e;--warn:#f2b233}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font-family:"Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif;overflow:hidden}
+  #stage{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+  #frame{position:relative;max-width:100%;max-height:100%}
+  #frame video,#frame img.src,#frame canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:fill}
+  #top{position:absolute;left:0;right:0;top:0;padding:calc(10px + env(safe-area-inset-top,0px)) 14px 10px;display:flex;gap:10px;align-items:flex-start;justify-content:space-between;pointer-events:none}
+  .chip{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:14px;line-height:1.5;pointer-events:auto;max-width:48vw}
+  .chip b{font-size:15px}
+  #state.ok{border-color:var(--ok)} #state.ok b{color:var(--ok)}
+  #active{font-size:13px;color:var(--muted)} #active span{display:block;color:var(--ink)}
+  #bottom{position:absolute;left:0;right:0;bottom:0;padding:10px 14px calc(12px + env(safe-area-inset-bottom,0px));background:var(--panel);border-top:1px solid var(--line)}
+  #row1{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  #date{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;min-width:8.5em}
+  #pct{font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums}
+  button,select{font:inherit;color:var(--ink);background:#1d2a3a;border:1px solid var(--line);border-radius:8px;padding:9px 14px;min-height:42px}
+  button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #play{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:700;min-width:5.5em}
+  #slider{width:100%;margin-top:8px;accent-color:var(--accent);height:30px}
+  #legend{display:flex;gap:14px;font-size:12.5px;color:var(--muted);margin-left:auto;flex-wrap:wrap}
+  #legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+  #msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center}
+  #msg div{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px 24px;max-width:30em;line-height:1.7}
+  #msg a{color:var(--accent)}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div id="stage"><div id="frame">
+  <video id="video" class="src" playsinline muted autoplay hidden></video>
+  <img id="photo" class="src" alt="" hidden>
+  <canvas id="gl"></canvas>
+</div></div>
+
+<div id="top">
+  <div class="chip" id="state"><b>도면을 비춰 주세요</b><br><span id="stateSub">도면의 마커가 화면에 들어오게 합니다</span></div>
+  <div class="chip" id="active" hidden>진행 중인 작업</div>
+</div>
+
+<div id="bottom">
+  <div id="row1">
+    <div id="date">----.--.--</div>
+    <button id="play">재생</button>
+    <select id="speed" aria-label="재생 속도">
+      <option value="7">1초에 1주</option>
+      <option value="30" selected>1초에 1개월</option>
+      <option value="90">1초에 3개월</option>
+    </select>
+    <span id="pct"></span>
+    <div id="legend">
+      <span><i style="background:#c9ced6"></i>완료</span>
+      <span><i style="background:#3ecf8e"></i>시공 중</span>
+      <span><i style="background:#f2b233"></i>가설</span>
+      <span><i style="background:#ef5b5b"></i>철거 중</span>
+    </div>
+  </div>
+  <input id="slider" type="range" min="0" max="100" value="0" step="1" aria-label="날짜">
+</div>
+
+<div id="msg" hidden><div id="msgBody"></div></div>
+
+<canvas id="work" hidden></canvas>
+<script src="vendor/cv.js"></script>
+<script src="vendor/aruco.js"></script>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from './vendor/GLTFLoader.js';
+
+const Q = new URLSearchParams(location.search);
+const DEMO = Q.has('demo');                    // 카메라 대신 시험 사진으로 확인
+const HFOV = parseFloat(Q.get('fov') || '62');  // 카메라 가로 화각(도). 기기마다 조금 다름
+const DATA = 'data/';
+const $ = id => document.getElementById(id);
+
+// ---------- 자료 읽기 ----------
+function parseCSV(text){
+  const rows=[]; let row=[], cur='', q=false;
+  text = text.replace(/^﻿/,'');
+  for(let i=0;i<text.length;i++){ const c=text[i];
+    if(q){ if(c==='"'){ if(text[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=c; }
+    else if(c==='"') q=true;
+    else if(c===','){ row.push(cur); cur=''; }
+    else if(c==='\n'||c==='\r'){ if(c==='\r'&&text[i+1]==='\n') i++; row.push(cur); cur=''; if(row.length>1||row[0]!=='') rows.push(row); row=[]; }
+    else cur+=c; }
+  if(cur!==''||row.length){ row.push(cur); rows.push(row); }
+  const head = rows.shift().map(s=>s.trim());
+  return rows.map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]??'').trim()])));
+}
+const getText = async u => { const r = await fetch(u, {cache:'no-cache'}); if(!r.ok) throw new Error(u+' 을(를) 읽지 못했습니다'); return r.text(); };
+const DAY = 86400000;
+const toDay = s => Math.round(Date.parse(s+'T00:00:00Z')/DAY);
+const fmt = d => new Date(d*DAY).toISOString().slice(0,10).replace(/-/g,'.');
+
+let tasks=[], drawings=[], dayMin=0, dayMax=1, curDay=0;
+const models = new Map();   // 모델 파일 → {group, byTask}
+
+// ---------- 3D ----------
+const renderer = new THREE.WebGLRenderer({canvas:$('gl'), alpha:true, antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 16/9, 0.01, 50);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 1.5));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(0.4, 1, 0.8); scene.add(sun);
+const holder = new THREE.Group(); holder.matrixAutoUpdate = false; holder.visible = false; scene.add(holder);
+
+const MAT = {
+  done: new THREE.MeshStandardMaterial({color:0xc9ced6, roughness:.85}),
+  work: new THREE.MeshStandardMaterial({color:0x3ecf8e, roughness:.6, emissive:0x0b3d26}),
+  temp: new THREE.MeshStandardMaterial({color:0xf2b233, roughness:.6, emissive:0x3d2a05}),
+  demo: new THREE.MeshStandardMaterial({color:0xef5b5b, roughness:.6, emissive:0x3d0f0f}),
+};
+const loader = new GLTFLoader();
+async function loadModel(file){
+  if(models.has(file)) return models.get(file);
+  const gltf = await loader.loadAsync(DATA+file);
+  const byTask = new Map();
+  gltf.scene.traverse(o => {
+    if(o.name) byTask.set(o.name, o);
+    if(o.isMesh && !o.geometry.attributes.normal) o.geometry.computeVertexNormals();   // 면 방향 정보가 없는 모델 대비
+  });
+  const rec = {group: gltf.scene, byTask};
+  models.set(file, rec);
+  // 연결 검사: 일정표의 작업이 모델에 없으면 알림
+  const missing = tasks.filter(t => !byTask.has(t.task_id)).map(t => t.task_id);
+  if(missing.length) console.warn('모델에 없는 작업:', missing.join(', '));
+  return rec;
+}
+
+// ---------- 4D: 날짜에 따라 보이기·색 ----------
+function applyDay(d){
+  curDay = d;
+  $('date').textContent = fmt(d);
+  $('slider').value = d - dayMin;
+  let done=0; const act=[];
+  for(const rec of models.values()){
+    for(const t of tasks){
+      const o = rec.byTask.get(t.task_id); if(!o) continue;
+      const before = d < t.s, during = d >= t.s && d <= t.e, after = d > t.e;
+      let vis, mat;
+      if(t.type==='가설'){ vis = during; mat = MAT.temp; }
+      else if(t.type==='철거'){ vis = !after; mat = during ? MAT.demo : MAT.done; }
+      else { vis = !before; mat = during ? MAT.work : MAT.done; }
+      o.visible = vis;
+      o.traverse(m => { if(m.isMesh) m.material = mat; });
+    }
+  }
+  for(const t of tasks){ if(d > t.e) done++; if(d >= t.s && d <= t.e) act.push(t.name); }
+  $('pct').textContent = '완료 ' + done + ' / ' + tasks.length + ' 작업';
+  const a = $('active'); a.hidden = act.length===0;
+  a.innerHTML = '진행 중인 작업' + act.slice(0,6).map(n=>'<span>'+n.replace(/[<&]/g,'')+'</span>').join('') + (act.length>6?'<span>외 '+(act.length-6)+'건</span>':'');
+}
+
+// ---------- 마커 → 자세 ----------
+const detector = new AR.Detector({dictionaryName:'ARUCO_MIP_36h12'});
+const work = $('work'), wctx = work.getContext('2d', {willReadFrequently:true});
+let DW=960, DH=540, F=800;
+
+function homography(src, dst){   // src[i]=[X,Y] (평면), dst[i]=[u,v] (화면) → 3x3
+  const A=[]; for(let i=0;i<4;i++){ const [X,Y]=src[i],[u,v]=dst[i];
+    A.push([X,Y,1,0,0,0,-u*X,-u*Y,u]); A.push([0,0,0,X,Y,1,-v*X,-v*Y,v]); }
+  for(let c=0;c<8;c++){ let p=c; for(let r=c+1;r<8;r++) if(Math.abs(A[r][c])>Math.abs(A[p][c])) p=r;
+    [A[c],A[p]]=[A[p],A[c]]; const d=A[c][c]; if(Math.abs(d)<1e-12) return null;
+    for(let k=c;k<9;k++) A[c][k]/=d;
+    for(let r=0;r<8;r++) if(r!==c){ const f=A[r][c]; for(let k=c;k<9;k++) A[r][k]-=f*A[c][k]; } }
+  const h=A.map(r=>r[8]); return [h[0],h[1],h[2],h[3],h[4],h[5],h[6],h[7],1];
+}
+const _F = new THREE.Matrix4().makeScale(1,-1,-1);
+function poseMatrix(corners, sizeM){   // 마커 좌표(m, x 오른쪽·y 아래) → three 카메라 좌표
+  const h=sizeM/2, src=[[-h,-h],[h,-h],[h,h],[-h,h]], dst=corners.map(c=>[c.x,c.y]);
+  const H=homography(src,dst); if(!H) return null;
+  const cx=DW/2, cy=DH/2;
+  const b=[ [(H[0]-cx*H[6])/F,(H[3]-cy*H[6])/F,H[6]], [(H[1]-cx*H[7])/F,(H[4]-cy*H[7])/F,H[7]], [(H[2]-cx*H[8])/F,(H[5]-cy*H[8])/F,H[8]] ];
+  const n=v=>Math.hypot(v[0],v[1],v[2]);
+  let lam=2/(n(b[0])+n(b[1])); if(b[2][2]*lam<0) lam=-lam;
+  let r1=new THREE.Vector3(...b[0]).multiplyScalar(lam), r2=new THREE.Vector3(...b[1]).multiplyScalar(lam);
+  const t=new THREE.Vector3(...b[2]).multiplyScalar(lam);
+  const r3=new THREE.Vector3().crossVectors(r1,r2).normalize();
+  r1.normalize(); r2.crossVectors(r3,r1).normalize();
+  const M=new THREE.Matrix4().makeBasis(r1,r2,r3).setPosition(t);
+  return new THREE.Matrix4().multiplyMatrices(_F, M);
+}
+function drawingMatrix(dw){   // 모델(m, X 교축·Y 위·Z 교축직각) → 마커 좌표
+  const s=1/dw.scale;
+  const axis=new THREE.Matrix4().set(1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1);
+  const rot=new THREE.Matrix4().makeRotationZ(THREE.MathUtils.degToRad(dw.rot));
+  const tr=new THREE.Matrix4().makeTranslation(dw.dx/1000, dw.dy/1000, 0);
+  return tr.multiply(rot).multiply(axis).multiply(new THREE.Matrix4().makeScale(s,s,s));
+}
+
+let smooth=null, lastSeen=0, curDrawing=null;
+async function onMarkers(markers, now){
+  const m = markers.find(k => drawings.some(d => d.marker === k.id));
+  if(m){
+    const dw = drawings.find(d => d.marker === m.id);
+    if(curDrawing !== dw){
+      curDrawing = dw; smooth = null;
+      const rec = await loadModel(dw.model);
+      holder.clear(); holder.add(rec.group); applyDay(curDay);
+    }
+    const c = m.corners.map(p=>({x:p.x,y:p.y}));
+    if(smooth){ const jump = Math.max(...c.map((p,i)=>Math.hypot(p.x-smooth[i].x,p.y-smooth[i].y)));
+      const a = jump > 25 ? 1 : 0.45;           // 크게 움직이면 바로 따라가고, 작으면 떨림을 줄임
+      smooth = c.map((p,i)=>({x:smooth[i].x+(p.x-smooth[i].x)*a, y:smooth[i].y+(p.y-smooth[i].y)*a})); }
+    else smooth = c;
+    const P = poseMatrix(smooth, dw.size/1000);
+    if(P){ holder.matrix.multiplyMatrices(P, drawingMatrix(dw)); holder.visible = true; lastSeen = now; }
+    const px = Math.round(Math.hypot(c[0].x-c[1].x, c[0].y-c[1].y));
+    $('state').className = 'chip ok';
+    $('state').innerHTML = '<b>'+dw.title.replace(/[<&]/g,'')+'</b><br><span>'+dw.id+' · 축척 1:'+dw.scale+' · 마커 '+px+'px'+(px<60?' (가까이 비추세요)':'')+'</span>';
+  } else if(now - lastSeen > 600){
+    holder.visible = false; smooth = null;
+    $('state').className = 'chip';
+    $('state').innerHTML = '<b>도면을 비춰 주세요</b><br><span>도면의 마커가 화면에 들어오게 합니다</span>';
+  }
+}
+
+// ---------- 화면 맞춤 ----------
+let srcEl=null, srcW=0, srcH=0;
+function layout(){
+  if(!srcW) return;
+  const bottom = $('bottom').offsetHeight, W=innerWidth, Hh=innerHeight-bottom;
+  $('stage').style.bottom = bottom+'px';
+  const k = Math.min(W/srcW, Hh/srcH), w=Math.floor(srcW*k), h=Math.floor(srcH*k);
+  const f=$('frame'); f.style.width=w+'px'; f.style.height=h+'px';
+  renderer.setSize(w,h,false);
+  DW = Math.min(960, srcW); DH = Math.round(DW*srcH/srcW); work.width=DW; work.height=DH;
+  F = (DW/2)/Math.tan(THREE.MathUtils.degToRad(HFOV)/2);
+  camera.fov = THREE.MathUtils.radToDeg(2*Math.atan((DH/2)/F)); camera.aspect = DW/DH; camera.updateProjectionMatrix();
+}
+addEventListener('resize', layout);
+
+// ---------- 재생 ----------
+let playing=false, lastT=0, busy=false;
+$('play').onclick = () => { playing=!playing; if(playing && curDay>=dayMax) applyDay(dayMin); $('play').textContent = playing?'일시정지':'재생'; };
+$('slider').oninput = e => applyDay(dayMin + (+e.target.value));
+
+function tick(now){
+  requestAnimationFrame(tick);
+  const dt = Math.min(0.1,(now-lastT)/1000); lastT=now;
+  if(playing){ const nd = curDay + dt*(+$('speed').value); if(nd>=dayMax){ applyDay(dayMax); playing=false; $('play').textContent='재생'; } else applyDay(nd); }
+  if(srcEl && srcW && !busy){
+    try{
+      wctx.drawImage(srcEl,0,0,DW,DH);
+      const markers = detector.detect(wctx.getImageData(0,0,DW,DH));
+      busy = true; onMarkers(markers, now).catch(e=>console.error(e)).finally(()=>busy=false);
+    }catch(e){ console.error(e); }
+  }
+  renderer.render(scene,camera);
+}
+
+function showMsg(html){ $('msgBody').innerHTML = html; $('msg').hidden = false; }
+
+async function startCamera(){
+  const v=$('video');
+  const stream = await navigator.mediaDevices.getUserMedia({audio:false, video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}});
+  v.srcObject = stream; v.hidden = false; await v.play();
+  srcEl=v; srcW=v.videoWidth; srcH=v.videoHeight; layout();
+}
+async function startDemo(){
+  const im=$('photo'); im.src = DATA+'test_photo.jpg'; await im.decode(); im.hidden=false;
+  srcEl=im; srcW=im.naturalWidth; srcH=im.naturalHeight; layout();
+}
+
+(async function main(){
+  try{
+    tasks = parseCSV(await getText(DATA+'tasks.csv')).map(t=>({...t, s:toDay(t.start), e:toDay(t.end)}));
+    drawings = parseCSV(await getText(DATA+'drawings.csv')).map(d=>({id:d.drawing_id, title:d.title, marker:+d.marker_id, scale:+d.scale, size:+d.marker_size_mm, dx:+d.origin_dx_mm, dy:+d.origin_dy_mm, rot:+d.rotation_deg, model:d.model}));
+    dayMin = Math.min(...tasks.map(t=>t.s)) - 7; dayMax = Math.max(...tasks.map(t=>t.e)) + 7;
+    $('slider').max = dayMax-dayMin;
+    applyDay(Q.has('day') ? toDay(Q.get('day')) : dayMin);
+  }catch(e){ showMsg('자료를 읽지 못했습니다.<br>'+e.message); return; }
+  try{
+    if(DEMO) await startDemo(); else await startCamera();
+  }catch(e){
+    showMsg('카메라를 켜지 못했습니다. 브라우저의 카메라 권한을 허용했는지, 주소가 https로 시작하는지 확인해 주세요.<br><br><a href="?demo">카메라 없이 시험 사진으로 보기</a>');
+  }
+  window.__viewer = {models, tasks, drawings, holder, get state(){ return {visible:holder.visible, drawing:curDrawing&&curDrawing.id, day:fmt(curDay)}; }};
+  requestAnimationFrame(tick);
+  if('serviceWorker' in navigator && !DEMO) navigator.serviceWorker.register('sw.js').catch(()=>{});
+})();
+</script>
+</body>
+</html>

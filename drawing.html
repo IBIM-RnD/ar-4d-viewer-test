@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>시험용 도면 DWG-001 (A4 가로, 100% 인쇄)</title>
+<style>
+  @page{size:A4 landscape;margin:0}
+  html,body{margin:0;background:#888;font-family:"Malgun Gothic",sans-serif}
+  #page{position:relative;width:297mm;height:210mm;background:#fff;margin:0 auto;overflow:hidden}
+  #page svg.plan{position:absolute;left:0;top:0;width:297mm;height:210mm}
+  #marker{position:absolute;left:13.75mm;top:133.75mm;width:62.5mm;height:62.5mm}
+  #marker svg{width:100%;height:100%;display:block;shape-rendering:crispEdges}
+  #qr{position:absolute;left:92mm;top:150mm;width:32mm;height:32mm}
+  #qr svg{width:100%;height:100%}
+  .cap{position:absolute;font-size:2.6mm;color:#222}
+  #help{max-width:297mm;margin:0 auto;padding:10px 14px;color:#fff;font-size:14px;line-height:1.6}
+  @media print{html,body{background:#fff}#help{display:none}}
+</style>
+</head>
+<body>
+<div id="help">A4 가로, <b>배율 100%(실제 크기)</b>로 인쇄하세요. "용지에 맞춤"으로 인쇄하면 축척이 틀어집니다. 인쇄 후 아래쪽 100mm 눈금을 자로 재서 확인합니다.</div>
+<div id="page">
+  <svg class="plan" viewBox="0 0 297 210" xmlns="http://www.w3.org/2000/svg" font-family="Malgun Gothic, sans-serif">
+    <rect x="5" y="5" width="287" height="200" fill="none" stroke="#000" stroke-width=".5"/>
+    <text x="10" y="14" font-size="5" font-weight="700">시험용 교량 평면도 (4경간 120m)</text>
+    <text x="10" y="20" font-size="3">가상 모델 · 실제 과업 도면이 아님</text>
+    <!-- 축척 1:500 → 1m = 2mm. 모델 원점(A1 중심) = (28, 85) -->
+    <g stroke="#000" fill="none" stroke-width=".35">
+      <rect x="28" y="67" width="240" height="36"/>
+      <line x1="28" y1="85" x2="268" y2="85" stroke-dasharray="6 1.5 1 1.5" stroke-width=".2"/>
+      <g stroke-width=".25" stroke-dasharray="1.2 .8">
+        <rect x="25.5" y="67" width="5" height="36"/><rect x="265.5" y="67" width="5" height="36"/>
+        <rect x="85" y="69" width="6" height="32"/><rect x="145" y="69" width="6" height="32"/><rect x="205" y="69" width="6" height="32"/>
+      </g>
+      <g stroke-width=".2"><line x1="28" y1="58" x2="268" y2="58"/>
+        <line x1="28" y1="56" x2="28" y2="60"/><line x1="88" y1="56" x2="88" y2="60"/><line x1="148" y1="56" x2="148" y2="60"/><line x1="208" y1="56" x2="208" y2="60"/><line x1="268" y1="56" x2="268" y2="60"/></g>
+      <circle cx="28" cy="85" r="1.2" fill="#000"/>
+    </g>
+    <g font-size="3" text-anchor="middle">
+      <text x="28" y="110">A1</text><text x="88" y="110">P1</text><text x="148" y="110">P2</text><text x="208" y="110">P3</text><text x="268" y="110">A2</text>
+      <text x="58" y="56">30,000</text><text x="118" y="56">30,000</text><text x="178" y="56">30,000</text><text x="238" y="56">30,000</text>
+      <text x="148" y="50" font-size="3.4">L = 120,000</text>
+    </g>
+    <text x="30" y="82" font-size="2.6">기준점</text>
+    <!-- 100mm 확인 눈금 -->
+    <g stroke="#000" stroke-width=".3"><line x1="140" y1="196" x2="240" y2="196"/><line x1="140" y1="193" x2="140" y2="199"/><line x1="190" y1="194" x2="190" y2="198"/><line x1="240" y1="193" x2="240" y2="199"/></g>
+    <text x="190" y="202" font-size="2.8" text-anchor="middle">100mm (인쇄 후 자로 확인)</text>
+    <!-- 표제란 -->
+    <g stroke="#000" stroke-width=".35" fill="none"><rect x="212" y="150" width="80" height="55"/><line x1="212" y1="164" x2="292" y2="164"/><line x1="212" y1="178" x2="292" y2="178"/><line x1="212" y1="192" x2="292" y2="192"/><line x1="236" y1="150" x2="236" y2="205"/></g>
+    <g font-size="3"><text x="215" y="159">도면명</text><text x="239" y="159">시험용 교량 평면도</text>
+      <text x="215" y="173">도면번호</text><text x="239" y="173" font-weight="700">DWG-001</text>
+      <text x="215" y="187">축척</text><text x="239" y="187" font-weight="700">1 : 500 (A4)</text>
+      <text x="215" y="200">마커</text><text x="239" y="200">ARUCO_MIP_36h12 #7 · 50mm</text></g>
+  </svg>
+  <div id="marker"></div>
+  <div class="cap" style="left:13.75mm;top:197mm">AR 마커 #7 (검은 테두리 한 변 50mm)</div>
+  <div id="qr"></div>
+  <div class="cap" style="left:92mm;top:183.5mm">뷰어 열기</div>
+</div>
+<script src="vendor/cv.js"></script>
+<script src="vendor/aruco.js"></script>
+<script src="vendor/qrcode.js"></script>
+<script>
+  if (location.search.indexOf('bare') >= 0) document.getElementById('help').style.display = 'none';
+  document.getElementById('marker').innerHTML = new AR.Dictionary('ARUCO_MIP_36h12').generateSVG(7);
+  var url = new URL('index.html', location.href).href;
+  var q = qrcode(0, 'M'); q.addData(url); q.make();
+  document.getElementById('qr').innerHTML = q.createSvgTag({cellSize:2, margin:2, scalable:true});
+</script>
+</body>
+</html>
