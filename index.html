@@ -209,31 +209,38 @@ function drawingMatrix(dw){   // 모델(m, X 교축·Y 위·Z 교축직각) → 
   return tr.multiply(rot).multiply(axis).multiply(new THREE.Matrix4().makeScale(s,s,s));
 }
 
-let smooth=null, lastSeen=0, curDrawing=null;
+let smooth=null, target=null, lastSeen=0, curDrawing=null, readyDrawing=null;
 async function onMarkers(markers, now){
   const m = markers.find(k => drawings.some(d => d.marker === k.id));
   if(m){
     const dw = drawings.find(d => d.marker === m.id);
     if(curDrawing !== dw){
-      curDrawing = dw; smooth = null;
+      curDrawing = dw; readyDrawing = null; smooth = null;
       const rec = await loadModel(dw.model);
-      holder.clear(); holder.add(rec.group); applyDay(curDay);
+      if(curDrawing !== dw) return;
+      holder.clear(); holder.add(rec.group); applyDay(curDay); readyDrawing = dw;
     }
-    const c = m.corners.map(p=>({x:p.x,y:p.y}));
-    if(smooth){ const jump = Math.max(...c.map((p,i)=>Math.hypot(p.x-smooth[i].x,p.y-smooth[i].y)));
-      const a = jump > 25 ? 1 : 0.45;           // 크게 움직이면 바로 따라가고, 작으면 떨림을 줄임
-      smooth = c.map((p,i)=>({x:smooth[i].x+(p.x-smooth[i].x)*a, y:smooth[i].y+(p.y-smooth[i].y)*a})); }
-    else smooth = c;
-    const P = poseMatrix(smooth, dw.size/1000);
-    if(P){ holder.matrix.multiplyMatrices(P, drawingMatrix(dw)); holder.visible = true; lastSeen = now; }
-    const px = Math.round(Math.hypot(c[0].x-c[1].x, c[0].y-c[1].y));
+    target = m.corners; lastSeen = now;
+    const c = m.corners, px = Math.round(Math.hypot(c[0].x-c[1].x, c[0].y-c[1].y));
     $('state').className = 'chip ok';
     $('state').innerHTML = '<b>'+dw.title.replace(/[<&]/g,'')+'</b><br><span>'+dw.id+' · 축척 1:'+dw.scale+' · 마커 '+px+'px'+(px<60?' (가까이 비추세요)':'')+'</span>';
   } else if(now - lastSeen > 600){
-    holder.visible = false; smooth = null;
+    holder.visible = false; smooth = null; target = null;
     $('state').className = 'chip';
     $('state').innerHTML = '<b>도면을 비춰 주세요</b><br><span>도면의 마커가 화면에 들어오게 합니다</span>';
   }
+}
+// 화면을 그릴 때마다: 마지막으로 인식한 위치를 향해 부드럽게 따라간다
+function followPose(dt){
+  if(!target || !readyDrawing) return;
+  if(!smooth) smooth = target.map(p=>({x:p.x,y:p.y}));
+  else{
+    const jump = Math.max(...target.map((p,i)=>Math.hypot(p.x-smooth[i].x,p.y-smooth[i].y)));
+    const a = jump > 40 ? 1 : 1-Math.exp(-dt*(jump > 6 ? 22 : 10));   // 크게 움직이면 바로, 작게 흔들리면 천천히
+    smooth = target.map((p,i)=>({x:smooth[i].x+(p.x-smooth[i].x)*a, y:smooth[i].y+(p.y-smooth[i].y)*a}));
+  }
+  const P = poseMatrix(smooth, readyDrawing.size/1000);
+  if(P){ holder.matrix.multiplyMatrices(P, drawingMatrix(readyDrawing)); holder.visible = true; }
 }
 
 // ---------- 화면 맞춤 ----------
@@ -245,7 +252,8 @@ function layout(){
   const k = Math.max(W/srcW, Hh/srcH), w=Math.ceil(srcW*k), h=Math.ceil(srcH*k);   // 화면을 꽉 채움
   const f=$('frame'); f.style.width=w+'px'; f.style.height=h+'px';
   renderer.setSize(w,h,false);
-  DW = Math.min(960, srcW); DH = Math.round(DW*srcH/srcW); work.width=DW; work.height=DH;
+  const ds = Math.min(1, 960/Math.max(srcW,srcH));   // 인식용 영상은 긴 변 960픽셀까지
+  DW = Math.round(srcW*ds); DH = Math.round(srcH*ds); work.width=DW; work.height=DH;
   F = (DW/2)/Math.tan(THREE.MathUtils.degToRad(HFOV)/2);
   camera.fov = THREE.MathUtils.radToDeg(2*Math.atan((DH/2)/F)); camera.aspect = DW/DH; camera.updateProjectionMatrix();
 }
@@ -257,24 +265,45 @@ let pfN=0, pfT=0, detMs=0, detN=0;
 $('play').onclick = () => { playing=!playing; if(playing && curDay>=dayMax) applyDay(dayMin); $('play').textContent = playing?'일시정지':'재생'; };
 $('slider').oninput = e => applyDay(dayMin + (+e.target.value));
 
+// 마커 인식: 가능하면 별도 작업자(worker)에서, 안 되면 화면 쪽에서 3장에 한 번
+let worker = null, pending = false, frameNo = 0, detHz = 0;
+try{
+  if(window.Worker && window.OffscreenCanvas && window.createImageBitmap){
+    worker = new Worker('detect-worker.js');
+    worker.onmessage = e => {
+      pending = false; const r = e.data;
+      if(r.w !== DW || r.h !== DH) return;
+      detMs += r.ms; detN++;
+      onMarkers(r.markers, performance.now()).catch(err=>console.error(err));
+    };
+    worker.onerror = () => { worker = null; pending = false; };
+  }
+}catch(e){ worker = null; }
+function requestDetect(now){
+  if(worker){
+    if(pending) return; pending = true;
+    createImageBitmap(srcEl, {resizeWidth:DW, resizeHeight:DH, resizeQuality:'low'})
+      .then(bm => worker.postMessage({bitmap:bm, w:DW, h:DH, t:now}, [bm]))
+      .catch(() => { pending = false; });
+  } else if(!busy && frameNo % 3 === 0){
+    const t0 = performance.now();
+    wctx.drawImage(srcEl,0,0,DW,DH);
+    const markers = detector.detect(wctx.getImageData(0,0,DW,DH));
+    detMs += performance.now()-t0; detN++;
+    busy = true; onMarkers(markers, now).catch(e=>console.error(e)).finally(()=>busy=false);
+  }
+}
 function tick(now){
   requestAnimationFrame(tick);
-  const dt = Math.min(0.1,(now-lastT)/1000); lastT=now;
+  const dt = Math.min(0.1,(now-lastT)/1000); lastT=now; frameNo++;
   if(playing){ const nd = curDay + dt*(+$('speed').value); if(nd>=dayMax){ applyDay(dayMax); playing=false; $('play').textContent='재생'; } else applyDay(nd); }
-  if(srcEl && srcW && !busy){
-    try{
-      const t0 = performance.now();
-      wctx.drawImage(srcEl,0,0,DW,DH);
-      const markers = detector.detect(wctx.getImageData(0,0,DW,DH));
-      detMs += performance.now()-t0; detN++;
-      busy = true; onMarkers(markers, now).catch(e=>console.error(e)).finally(()=>busy=false);
-    }catch(e){ console.error(e); }
-  }
+  if(srcEl && srcW){ try{ requestDetect(now); }catch(e){ console.error(e); } }
+  followPose(dt);
   renderer.render(scene,camera);
   pfN++;
   if(now-pfT >= 1000){
-    const tri = renderer.info.render.triangles, calls = renderer.info.render.calls;
-    $('perf').textContent = '화면 '+Math.round(pfN*1000/(now-pfT))+'fps · 인식 '+(detN?Math.round(detMs/detN):0)+'ms · 그리기 '+calls+'회 · 삼각형 '+(tri>=10000?(tri/10000).toFixed(1)+'만':tri)+' · 작업 '+tasks.length+'개';
+    const tri = renderer.info.render.triangles, calls = renderer.info.render.calls, sec=(now-pfT)/1000;
+    $('perf').textContent = '화면 '+Math.round(pfN/sec)+'fps · 인식 '+Math.round(detN/sec)+'회/초 ('+(detN?Math.round(detMs/detN):0)+'ms'+(worker?'':', 분리 안 됨')+') · 그리기 '+calls+'회 · 삼각형 '+(tri>=10000?(tri/10000).toFixed(1)+'만':tri)+' · 작업 '+tasks.length+'개';
     pfN=0; pfT=now; detMs=0; detN=0;
   }
 }
@@ -296,7 +325,7 @@ async function loadPackage(){
   const t = parseCSV(await getText('tasks.csv')).map(t=>({...t, s:toDay(t.start), e:toDay(t.end)}));
   const d = parseCSV(await getText('drawings.csv')).map(d=>({id:d.drawing_id, title:d.title, marker:+d.marker_id, scale:+d.scale, size:+d.marker_size_mm, dx:+d.origin_dx_mm, dy:+d.origin_dy_mm, rot:+d.rotation_deg, model:d.model}));
   if(!t.length || !d.length) throw new Error('tasks.csv 또는 drawings.csv 가 비어 있습니다');
-  tasks = t; drawings = d; models.clear(); holder.clear(); holder.visible = false; curDrawing = null; smooth = null;
+  tasks = t; drawings = d; models.clear(); holder.clear(); holder.visible = false; curDrawing = null; readyDrawing = null; smooth = null; target = null;
   dayMin = Math.min(...tasks.map(t=>t.s)) - 7; dayMax = Math.max(...tasks.map(t=>t.e)) + 7;
   $('slider').max = dayMax-dayMin;
   applyDay(Q.has('day') ? toDay(Q.get('day')) : dayMin);
