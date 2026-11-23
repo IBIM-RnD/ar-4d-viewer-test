@@ -1,5 +1,5 @@
 // 오프라인 사용: 통신이 되면 새 파일을 받아 저장해 두고, 안 되면 저장해 둔 파일을 쓴다.
-const CACHE = 'ar4d-v4';
+const CACHE = 'ar4d-v5';
 const FILES = ['./', 'index.html', 'drawing.html', 'detect-worker.js', 'vendor/cv.js', 'vendor/aruco.js', 'vendor/qrcode.js', 'vendor/three.module.min.js', 'vendor/GLTFLoader.js', 'vendor/BufferGeometryUtils.js',
   'data/tasks.csv', 'data/drawings.csv', 'data/model.glb', 'data/info.json', 'data/test_photo.jpg'];
 self.addEventListener('install', e => e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())));

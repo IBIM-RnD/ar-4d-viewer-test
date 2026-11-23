@@ -56,7 +56,7 @@
       <option value="90">1초에 3개월</option>
     </select>
     <span id="pct"></span>
-    <select id="pkg" aria-label="시험 모델">
+    <select id="pkg" aria-label="시험 모델" autocomplete="off">
       <option value="">모델: 기본 (작업 27)</option>
       <option value="m">모델: 삼각형 10만</option>
       <option value="l">모델: 삼각형 52만</option>
@@ -330,7 +330,8 @@ async function loadPackage(){
   $('slider').max = dayMax-dayMin;
   applyDay(Q.has('day') ? toDay(Q.get('day')) : dayMin);
 }
-$('pkg').value = Q.get('pkg') || '';
+const syncPkg = () => { $('pkg').value = Q.get('pkg') || ''; };   // 브라우저가 이전 선택을 되살려도 실제 열린 모델과 맞춤
+syncPkg(); addEventListener('pageshow', syncPkg); setTimeout(syncPkg, 300);
 $('pkg').onchange = e => { const q = new URLSearchParams(location.search); if(e.target.value) q.set('pkg', e.target.value); else q.delete('pkg'); location.search = q.toString(); };
 $('pick').onclick = () => $('files').click();
 $('files').onchange = async e => {
