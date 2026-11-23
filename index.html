@@ -27,7 +27,9 @@
   #legend{display:flex;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap;margin-top:6px}
   #legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px;vertical-align:-1px}
   #perf{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:4px;min-height:1.4em}
-  #pick,#pkg{padding:9px 10px;font-size:13px}
+  #pick,#pkg,#xr{padding:9px 10px;font-size:13px}
+  html.xr,html.xr body{background:transparent}
+  html.xr #stage{display:none}
   #msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center}
   #msg div{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px 24px;max-width:30em;line-height:1.7}
   #msg a{color:var(--accent)}
@@ -63,6 +65,7 @@
       <option value="h">모델: 삼각형 203만</option>
     </select>
     <button id="pick">꾸러미 열기</button>
+    <button id="xr" hidden>공간 고정 (시험)</button>
     <input id="files" type="file" multiple accept=".glb,.csv,.json" hidden>
   </div>
   <input id="slider" type="range" min="0" max="100" value="0" step="1" aria-label="날짜">
@@ -187,11 +190,11 @@ function homography(src, dst){   // src[i]=[X,Y] (평면), dst[i]=[u,v] (화면)
   const h=A.map(r=>r[8]); return [h[0],h[1],h[2],h[3],h[4],h[5],h[6],h[7],1];
 }
 const _F = new THREE.Matrix4().makeScale(1,-1,-1);
-function poseMatrix(corners, sizeM){   // 마커 좌표(m, x 오른쪽·y 아래) → three 카메라 좌표
+function poseMatrix(corners, sizeM, K){   // 마커 좌표(m, x 오른쪽·y 아래) → three 카메라 좌표
   const h=sizeM/2, src=[[-h,-h],[h,-h],[h,h],[-h,h]], dst=corners.map(c=>[c.x,c.y]);
   const H=homography(src,dst); if(!H) return null;
-  const cx=DW/2, cy=DH/2;
-  const b=[ [(H[0]-cx*H[6])/F,(H[3]-cy*H[6])/F,H[6]], [(H[1]-cx*H[7])/F,(H[4]-cy*H[7])/F,H[7]], [(H[2]-cx*H[8])/F,(H[5]-cy*H[8])/F,H[8]] ];
+  const fx=K?K.fx:F, fy=K?K.fy:F, cx=K?K.cx:DW/2, cy=K?K.cy:DH/2;
+  const b=[ [(H[0]-cx*H[6])/fx,(H[3]-cy*H[6])/fy,H[6]], [(H[1]-cx*H[7])/fx,(H[4]-cy*H[7])/fy,H[7]], [(H[2]-cx*H[8])/fx,(H[5]-cy*H[8])/fy,H[8]] ];
   const n=v=>Math.hypot(v[0],v[1],v[2]);
   let lam=2/(n(b[0])+n(b[1])); if(b[2][2]*lam<0) lam=-lam;
   let r1=new THREE.Vector3(...b[0]).multiplyScalar(lam), r2=new THREE.Vector3(...b[1]).multiplyScalar(lam);
@@ -271,7 +274,9 @@ try{
   if(window.Worker && window.OffscreenCanvas && window.createImageBitmap){
     worker = new Worker('detect-worker.js');
     worker.onmessage = e => {
-      pending = false; const r = e.data;
+      const r = e.data;
+      if(r.tag === 'xr'){ handleXR(r).catch(err=>xrNote('오류: '+err.message)); return; }
+      pending = false;
       if(r.w !== DW || r.h !== DH) return;
       detMs += r.ms; detN++;
       onMarkers(r.markers, performance.now()).catch(err=>console.error(err));
@@ -296,14 +301,21 @@ function requestDetect(now){
 function tick(now){
   requestAnimationFrame(tick);
   const dt = Math.min(0.1,(now-lastT)/1000); lastT=now; frameNo++;
-  if(playing){ const nd = curDay + dt*(+$('speed').value); if(nd>=dayMax){ applyDay(dayMax); playing=false; $('play').textContent='재생'; } else applyDay(nd); }
+  if(xr) return;                      // 공간 고정 중에는 xrFrame 이 화면을 그림
+  stepPlay(dt);
   if(srcEl && srcW){ try{ requestDetect(now); }catch(e){ console.error(e); } }
   followPose(dt);
   renderer.render(scene,camera);
+  perfTick(now);
+}
+function stepPlay(dt){
+  if(playing){ const nd = curDay + dt*(+$('speed').value); if(nd>=dayMax){ applyDay(dayMax); playing=false; $('play').textContent='재생'; } else applyDay(nd); }
+}
+function perfTick(now){
   pfN++;
   if(now-pfT >= 1000){
     const tri = renderer.info.render.triangles, calls = renderer.info.render.calls, sec=(now-pfT)/1000;
-    $('perf').textContent = '화면 '+Math.round(pfN/sec)+'fps · 인식 '+Math.round(detN/sec)+'회/초 ('+(detN?Math.round(detMs/detN):0)+'ms'+(worker?'':', 분리 안 됨')+') · 그리기 '+calls+'회 · 삼각형 '+(tri>=10000?(tri/10000).toFixed(1)+'만':tri)+' · 작업 '+tasks.length+'개';
+    $('perf').textContent = '화면 '+Math.round(pfN/sec)+'fps · 인식 '+Math.round(detN/sec)+'회/초 ('+(detN?Math.round(detMs/detN):0)+'ms'+(worker?'':', 분리 안 됨')+')'+(xr?' · 공간 고정':'')+' · 그리기 '+calls+'회 · 삼각형 '+(tri>=10000?(tri/10000).toFixed(1)+'만':tri)+' · 작업 '+tasks.length+'개';
     pfN=0; pfT=now; detMs=0; detN=0;
   }
 }
@@ -319,6 +331,111 @@ async function startCamera(){
 async function startDemo(){
   const im=$('photo'); im.src = 'data/test_photo.jpg'; await im.decode(); im.hidden=false;
   srcEl=im; srcW=im.naturalWidth; srcH=im.naturalHeight; layout();
+}
+
+// ---------- 공간 고정 (WebXR, 시험) ----------
+// 마커로 위치와 축척을 잡은 뒤에는 기기의 공간 추적이 모델을 그 자리에 붙잡아 둔다. 마커가 화면을 벗어나도 유지된다.
+let xr = null;
+function xrNote(t){ $('state').className = 'chip'+(xr&&xr.placed?' ok':''); $('state').innerHTML = '<b>공간 고정 (시험)</b><br><span>'+t+'</span>'; }
+if(navigator.xr && worker){ navigator.xr.isSessionSupported('immersive-ar').then(ok => { if(ok) $('xr').hidden = false; }).catch(()=>{}); }
+$('xr').onclick = () => { if(xr) xr.session.end(); else startXR().catch(e => { stopXR(); showMsg('공간 고정을 시작하지 못했습니다.<br>'+e.message+'<br><br><a href="">닫기</a>'); }); };
+async function startXR(){
+  const session = await navigator.xr.requestSession('immersive-ar', {requiredFeatures:['local','camera-access'], optionalFeatures:['dom-overlay'], domOverlay:{root:document.body}});
+  const v=$('video'); if(v.srcObject){ v.srcObject.getTracks().forEach(t=>t.stop()); v.srcObject=null; }
+  srcEl = null; target = null; smooth = null; holder.visible = false;
+  document.documentElement.classList.add('xr');
+  renderer.xr.enabled = true; renderer.xr.setReferenceSpaceType('local');
+  await renderer.xr.setSession(session);
+  const gl = renderer.getContext();
+  xr = {session, gl, binding:new XRWebGLBinding(session, gl), fbS:gl.createFramebuffer(), fbD:gl.createFramebuffer(), rb:gl.createRenderbuffer(),
+        w:0, h:0, pending:false, n:0, id:0, q:new Map(), flip:true, flipLocked:false, tries:0, placed:false, last:performance.now(), got:0};
+  session.addEventListener('end', stopXR);
+  renderer.setAnimationLoop(xrFrame);
+  $('xr').textContent = '공간 고정 끝내기';
+  xrNote('도면의 마커를 비춰 주세요');
+}
+function stopXR(){
+  if(!xr && !renderer.xr.enabled) return;
+  renderer.setAnimationLoop(null); renderer.xr.enabled = false; xr = null;
+  document.documentElement.classList.remove('xr');
+  $('xr').textContent = '공간 고정 (시험)';
+  holder.visible = false; target = null; smooth = null; curDrawing = null; readyDrawing = null;
+  $('state').className = 'chip'; $('state').innerHTML = '<b>도면을 비춰 주세요</b><br><span>도면의 마커가 화면에 들어오게 합니다</span>';
+  startCamera().catch(()=>{});
+}
+function xrFrame(time, frame){
+  if(!xr) return;
+  const dt = Math.min(0.1,(time-xr.last)/1000); xr.last = time;
+  stepPlay(dt);
+  try{
+    const pose = frame.getViewerPose(renderer.xr.getReferenceSpace());
+    if(pose && pose.views.length){
+      const view = pose.views[0];
+      if(!view.camera){ if(xr.n++ % 60 === 0) xrNote('이 기기·브라우저는 카메라 영상 접근을 주지 않습니다'); }
+      else if(!xr.pending && (xr.n++ % 3 === 0)) xrGrab(view);
+    }
+  }catch(e){ xrNote('오류: '+e.message); }
+  renderer.render(scene,camera);
+  perfTick(time);
+}
+function xrGrab(view){
+  const gl = xr.gl, cam = view.camera, tex = xr.binding.getCameraImage(cam);
+  const k = Math.min(1, 960/Math.max(cam.width,cam.height)), w = Math.round(cam.width*k), h = Math.round(cam.height*k);
+  const pR = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING), pD = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING), pB = gl.getParameter(gl.RENDERBUFFER_BINDING), sc = gl.isEnabled(gl.SCISSOR_TEST);
+  if(sc) gl.disable(gl.SCISSOR_TEST);
+  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, xr.fbD);
+  if(xr.w !== w || xr.h !== h){
+    gl.bindRenderbuffer(gl.RENDERBUFFER, xr.rb); gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, w, h);
+    gl.framebufferRenderbuffer(gl.DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, xr.rb); xr.w = w; xr.h = h;
+  }
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, xr.fbS);
+  gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  if(xr.flip) gl.blitFramebuffer(0,0,cam.width,cam.height, 0,h,w,0, gl.COLOR_BUFFER_BIT, gl.LINEAR);   // 위아래를 뒤집어 영상의 윗줄이 먼저 오게
+  else        gl.blitFramebuffer(0,0,cam.width,cam.height, 0,0,w,h, gl.COLOR_BUFFER_BIT, gl.LINEAR);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, xr.fbD);
+  const buf = new Uint8Array(w*h*4); gl.readPixels(0,0,w,h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, xr.fbS);
+  gl.framebufferTexture2D(gl.READ_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, pR); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, pD); gl.bindRenderbuffer(gl.RENDERBUFFER, pB);
+  if(sc) gl.enable(gl.SCISSOR_TEST);
+  const P = view.projectionMatrix, id = ++xr.id;
+  xr.q.set(id, {wfv:new THREE.Matrix4().fromArray(view.transform.matrix),
+                K:{fx:P[0]*w/2, fy:P[5]*h/2, cx:(1-P[8])*w/2, cy:(xr.flip ? (1+P[9]) : (1-P[9]))*h/2}});
+  xr.pending = true;
+  worker.postMessage({pixels:buf.buffer, w, h, t:id, tag:'xr'}, [buf.buffer]);
+}
+const _p=new THREE.Vector3(), _q=new THREE.Quaternion(), _s=new THREE.Vector3(), _p2=new THREE.Vector3(), _q2=new THREE.Quaternion(), _s2=new THREE.Vector3();
+async function handleXR(r){
+  if(!xr) return;
+  xr.pending = false; xr.got++; detMs += r.ms; detN++;
+  const info = xr.q.get(r.t); xr.q.delete(r.t); if(!info) return;
+  if(r.error){ xrNote('인식 오류: '+r.error); return; }
+  const m = r.markers.find(k => drawings.some(d => d.marker === k.id));
+  if(!m){
+    if(!xr.flipLocked && ++xr.tries % 8 === 0) xr.flip = !xr.flip;       // 영상 방향을 모를 때 번갈아 시도
+    xrNote(xr.placed ? '고정됨 · 마커가 안 보여도 유지됩니다' : '도면의 마커를 비춰 주세요 (영상 '+r.w+'×'+r.h+', 시도 '+xr.got+')');
+    return;
+  }
+  xr.flipLocked = true;
+  const dw = drawings.find(d => d.marker === m.id);
+  if(curDrawing !== dw){
+    curDrawing = dw; readyDrawing = null;
+    const rec = await loadModel(dw.model);
+    if(!xr || curDrawing !== dw) return;
+    holder.clear(); holder.add(rec.group); applyDay(curDay); readyDrawing = dw;
+  }
+  if(readyDrawing !== dw) return;
+  const P = poseMatrix(m.corners, dw.size/1000, info.K); if(!P) return;
+  const W = new THREE.Matrix4().multiplyMatrices(info.wfv, P).multiply(drawingMatrix(dw));
+  W.decompose(_p,_q,_s);
+  if(xr.placed){
+    holder.matrix.decompose(_p2,_q2,_s2);
+    const a = _p.distanceTo(_p2) > 0.05 ? 1 : 0.2;                        // 조금씩 보정해 떨림을 줄임
+    _p2.lerp(_p,a); _q2.slerp(_q,a); holder.matrix.compose(_p2,_q2,_s);
+  } else holder.matrix.copy(W);
+  holder.visible = true; xr.placed = true;
+  const px = Math.round(Math.hypot(m.corners[0].x-m.corners[1].x, m.corners[0].y-m.corners[1].y));
+  xrNote(dw.id+' · 축척 1:'+dw.scale+' · 마커 '+px+'px · 고정됨');
 }
 
 async function loadPackage(){
