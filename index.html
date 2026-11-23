@@ -26,6 +26,8 @@
   #slider{width:100%;margin-top:8px;accent-color:var(--accent);height:30px}
   #legend{display:flex;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap;margin-top:6px}
   #legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+  #perf{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;margin-top:4px;min-height:1.4em}
+  #pick,#pkg{padding:9px 10px;font-size:13px}
   #msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center}
   #msg div{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px 24px;max-width:30em;line-height:1.7}
   #msg a{color:var(--accent)}
@@ -54,8 +56,17 @@
       <option value="90">1초에 3개월</option>
     </select>
     <span id="pct"></span>
+    <select id="pkg" aria-label="시험 모델">
+      <option value="">모델: 기본 (작업 27)</option>
+      <option value="m">모델: 삼각형 10만</option>
+      <option value="l">모델: 삼각형 52만</option>
+      <option value="h">모델: 삼각형 203만</option>
+    </select>
+    <button id="pick">꾸러미 열기</button>
+    <input id="files" type="file" multiple accept=".glb,.csv,.json" hidden>
   </div>
   <input id="slider" type="range" min="0" max="100" value="0" step="1" aria-label="날짜">
+  <div id="perf"></div>
   <div id="legend">
     <span><i style="background:#c9ced6"></i>완료</span>
     <span><i style="background:#3ecf8e"></i>시공 중</span>
@@ -78,7 +89,9 @@ import { GLTFLoader } from './vendor/GLTFLoader.js';
 const Q = new URLSearchParams(location.search);
 const DEMO = Q.has('demo');                    // 카메라 대신 시험 사진으로 확인
 const HFOV = parseFloat(Q.get('fov') || '62');  // 카메라 가로 화각(도). 기기마다 조금 다름
-const DATA = 'data/';
+let DATA = Q.get('pkg') ? 'data-'+Q.get('pkg').replace(/[^a-z0-9]/gi,'')+'/' : 'data/';
+const localFiles = new Map();          // 기기에서 직접 고른 꾸러미 파일 (서버로 올라가지 않음)
+const res = name => localFiles.has(name) ? localFiles.get(name) : DATA+name;
 const $ = id => document.getElementById(id);
 
 // ---------- 자료 읽기 ----------
@@ -95,7 +108,7 @@ function parseCSV(text){
   const head = rows.shift().map(s=>s.trim());
   return rows.map(r=>Object.fromEntries(head.map((h,i)=>[h,(r[i]??'').trim()])));
 }
-const getText = async u => { const r = await fetch(u, {cache:'no-cache'}); if(!r.ok) throw new Error(u+' 을(를) 읽지 못했습니다'); return r.text(); };
+const getText = async name => { const r = await fetch(res(name), {cache:'no-cache'}); if(!r.ok) throw new Error(name+' 을(를) 읽지 못했습니다'); return r.text(); };
 const DAY = 86400000;
 const toDay = s => Math.round(Date.parse(s+'T00:00:00Z')/DAY);
 const fmt = d => new Date(d*DAY).toISOString().slice(0,10).replace(/-/g,'.');
@@ -121,7 +134,7 @@ const MAT = {
 const loader = new GLTFLoader();
 async function loadModel(file){
   if(models.has(file)) return models.get(file);
-  const gltf = await loader.loadAsync(DATA+file);
+  const gltf = await loader.loadAsync(res(file));
   const byTask = new Map();
   gltf.scene.traverse(o => {
     if(o.name) byTask.set(o.name, o);
@@ -240,6 +253,7 @@ addEventListener('resize', layout);
 
 // ---------- 재생 ----------
 let playing=false, lastT=0, busy=false;
+let pfN=0, pfT=0, detMs=0, detN=0;
 $('play').onclick = () => { playing=!playing; if(playing && curDay>=dayMax) applyDay(dayMin); $('play').textContent = playing?'일시정지':'재생'; };
 $('slider').oninput = e => applyDay(dayMin + (+e.target.value));
 
@@ -249,12 +263,20 @@ function tick(now){
   if(playing){ const nd = curDay + dt*(+$('speed').value); if(nd>=dayMax){ applyDay(dayMax); playing=false; $('play').textContent='재생'; } else applyDay(nd); }
   if(srcEl && srcW && !busy){
     try{
+      const t0 = performance.now();
       wctx.drawImage(srcEl,0,0,DW,DH);
       const markers = detector.detect(wctx.getImageData(0,0,DW,DH));
+      detMs += performance.now()-t0; detN++;
       busy = true; onMarkers(markers, now).catch(e=>console.error(e)).finally(()=>busy=false);
     }catch(e){ console.error(e); }
   }
   renderer.render(scene,camera);
+  pfN++;
+  if(now-pfT >= 1000){
+    const tri = renderer.info.render.triangles, calls = renderer.info.render.calls;
+    $('perf').textContent = '화면 '+Math.round(pfN*1000/(now-pfT))+'fps · 인식 '+(detN?Math.round(detMs/detN):0)+'ms · 그리기 '+calls+'회 · 삼각형 '+(tri>=10000?(tri/10000).toFixed(1)+'만':tri)+' · 작업 '+tasks.length+'개';
+    pfN=0; pfT=now; detMs=0; detN=0;
+  }
 }
 
 function showMsg(html){ $('msgBody').innerHTML = html; $('msg').hidden = false; }
@@ -266,18 +288,35 @@ async function startCamera(){
   srcEl=v; srcW=v.videoWidth; srcH=v.videoHeight; layout();
 }
 async function startDemo(){
-  const im=$('photo'); im.src = DATA+'test_photo.jpg'; await im.decode(); im.hidden=false;
+  const im=$('photo'); im.src = 'data/test_photo.jpg'; await im.decode(); im.hidden=false;
   srcEl=im; srcW=im.naturalWidth; srcH=im.naturalHeight; layout();
 }
 
-(async function main(){
+async function loadPackage(){
+  const t = parseCSV(await getText('tasks.csv')).map(t=>({...t, s:toDay(t.start), e:toDay(t.end)}));
+  const d = parseCSV(await getText('drawings.csv')).map(d=>({id:d.drawing_id, title:d.title, marker:+d.marker_id, scale:+d.scale, size:+d.marker_size_mm, dx:+d.origin_dx_mm, dy:+d.origin_dy_mm, rot:+d.rotation_deg, model:d.model}));
+  if(!t.length || !d.length) throw new Error('tasks.csv 또는 drawings.csv 가 비어 있습니다');
+  tasks = t; drawings = d; models.clear(); holder.clear(); holder.visible = false; curDrawing = null; smooth = null;
+  dayMin = Math.min(...tasks.map(t=>t.s)) - 7; dayMax = Math.max(...tasks.map(t=>t.e)) + 7;
+  $('slider').max = dayMax-dayMin;
+  applyDay(Q.has('day') ? toDay(Q.get('day')) : dayMin);
+}
+$('pkg').value = Q.get('pkg') || '';
+$('pkg').onchange = e => { const q = new URLSearchParams(location.search); if(e.target.value) q.set('pkg', e.target.value); else q.delete('pkg'); location.search = q.toString(); };
+$('pick').onclick = () => $('files').click();
+$('files').onchange = async e => {
+  const fs = [...e.target.files]; if(!fs.length) return;
+  for(const u of localFiles.values()) URL.revokeObjectURL(u);
+  localFiles.clear(); for(const f of fs) localFiles.set(f.name, URL.createObjectURL(f));
   try{
-    tasks = parseCSV(await getText(DATA+'tasks.csv')).map(t=>({...t, s:toDay(t.start), e:toDay(t.end)}));
-    drawings = parseCSV(await getText(DATA+'drawings.csv')).map(d=>({id:d.drawing_id, title:d.title, marker:+d.marker_id, scale:+d.scale, size:+d.marker_size_mm, dx:+d.origin_dx_mm, dy:+d.origin_dy_mm, rot:+d.rotation_deg, model:d.model}));
-    dayMin = Math.min(...tasks.map(t=>t.s)) - 7; dayMax = Math.max(...tasks.map(t=>t.e)) + 7;
-    $('slider').max = dayMax-dayMin;
-    applyDay(Q.has('day') ? toDay(Q.get('day')) : dayMin);
-  }catch(e){ showMsg('자료를 읽지 못했습니다.<br>'+e.message); return; }
+    if(!localFiles.has('tasks.csv') || !localFiles.has('drawings.csv')) throw new Error('tasks.csv, drawings.csv, 모델(.glb)을 함께 골라 주세요');
+    await loadPackage(); $('msg').hidden = true; $('pick').textContent = '꾸러미: 기기 파일';
+  }catch(err){ localFiles.clear(); showMsg('꾸러미를 열지 못했습니다.<br>'+err.message+'<br><br><a href="">처음으로</a>'); }
+  e.target.value = '';
+};
+
+(async function main(){
+  try{ await loadPackage(); }catch(e){ showMsg('자료를 읽지 못했습니다.<br>'+e.message); return; }
   try{
     if(DEMO) await startDemo(); else await startCamera();
   }catch(e){
