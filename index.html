@@ -204,11 +204,12 @@ function poseMatrix(corners, sizeM, K){   // 마커 좌표(m, x 오른쪽·y 아
   const M=new THREE.Matrix4().makeBasis(r1,r2,r3).setPosition(t);
   return new THREE.Matrix4().multiplyMatrices(_F, M);
 }
-function drawingMatrix(dw){   // 모델(m, X 교축·Y 위·Z 교축직각) → 마커 좌표
-  const s=1/dw.scale;
+function drawingMatrix(dw, k){   // 모델(m, X 교축·Y 위·Z 교축직각) → 마커 좌표. k = 실제 마커 크기 ÷ 기준 크기
+  k = k || 1;
+  const s=k/dw.scale;
   const axis=new THREE.Matrix4().set(1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1);
   const rot=new THREE.Matrix4().makeRotationZ(THREE.MathUtils.degToRad(dw.rot));
-  const tr=new THREE.Matrix4().makeTranslation(dw.dx/1000, dw.dy/1000, 0);
+  const tr=new THREE.Matrix4().makeTranslation(dw.dx*k/1000, dw.dy*k/1000, 0);
   return tr.multiply(rot).multiply(axis).multiply(new THREE.Matrix4().makeScale(s,s,s));
 }
 
@@ -360,7 +361,7 @@ async function startXR(){
   await renderer.xr.setSession(session);
   const gl = renderer.getContext();
   xr = {session, gl, binding:new XRWebGLBinding(session, gl), fbS:gl.createFramebuffer(), fbD:gl.createFramebuffer(), rb:gl.createRenderbuffer(),
-        w:0, h:0, pending:false, n:0, id:0, q:new Map(), flip:true, flipLocked:false, tries:0, placed:false, last:performance.now(), got:0};
+        w:0, h:0, pending:false, n:0, id:0, q:new Map(), flip:true, flipLocked:false, tries:0, placed:false, last:performance.now(), got:0, samples:[], k:0};
   session.addEventListener('end', stopXR);
   renderer.setAnimationLoop(xrFrame);
   $('xr').textContent = '공간 고정 끝내기';
@@ -380,7 +381,7 @@ function xrFrame(time, frame){
   const dt = Math.min(0.1,(time-xr.last)/1000); xr.last = time;
   stepPlay(dt);
   try{
-    const pose = frame.getViewerPose(renderer.xr.getReferenceSpace());
+    const pose = frame ? frame.getViewerPose(renderer.xr.getReferenceSpace()) : null;
     if(pose && pose.views.length){
       const view = pose.views[0];
       if(!view.camera){ if(xr.n++ % 60 === 0) xrNote('이 기기·브라우저는 카메라 영상 접근을 주지 않습니다'); }
@@ -437,17 +438,34 @@ async function handleXR(r){
     holder.clear(); holder.add(rec.group); applyDay(curDay); readyDrawing = dw;
   }
   if(readyDrawing !== dw) return;
-  const P = poseMatrix(m.corners, dw.size/1000, info.K); if(!P) return;
-  const W = new THREE.Matrix4().multiplyMatrices(info.wfv, P).multiply(drawingMatrix(dw));
+  // 마커의 실제 크기 재기: 기준 크기(예 50mm)로 계산한 마커 위치는 실제 크기가 다르면 보는 위치마다 달라진다.
+  // 여러 위치에서 본 결과가 한 점에 모이도록 하는 배율 k 를 구한다. (모니터에 띄운 도면, 축소 인쇄된 도면도 맞게 됨)
+  const P0 = poseMatrix(m.corners, dw.size/1000, info.K); if(!P0) return;
+  const cam = new THREE.Vector3().setFromMatrixPosition(info.wfv);
+  const vec = new THREE.Vector3().setFromMatrixPosition(P0).applyMatrix4(info.wfv).sub(cam);
+  const S = xr.samples;
+  if(!S.length || S[S.length-1].c.distanceTo(cam) > 0.02){ S.push({c:cam, v:vec}); if(S.length > 60) S.shift(); }
+  let span = 0; for(const a of S) span = Math.max(span, a.c.distanceTo(S[0].c));
+  if(S.length >= 6 && span > 0.08){
+    const cb = new THREE.Vector3(), vb = new THREE.Vector3();
+    for(const a of S){ cb.add(a.c); vb.add(a.v); } cb.multiplyScalar(1/S.length); vb.multiplyScalar(1/S.length);
+    let num = 0, den = 0;
+    for(const a of S){ const dc = a.c.clone().sub(cb), dv = a.v.clone().sub(vb); num += dc.lengthSq(); den += dc.dot(dv); }
+    const k = den < -1e-9 ? -num/den : 0;      // 기기 위치(정확한 쪽)를 기준으로 맞춤
+    if(k > 0.15 && k < 4) xr.k = xr.k ? xr.k + (k - xr.k)*0.3 : k;
+  }
+  const k = xr.k || 1;
+  const P = poseMatrix(m.corners, dw.size*k/1000, info.K); if(!P) return;
+  const W = new THREE.Matrix4().multiplyMatrices(info.wfv, P).multiply(drawingMatrix(dw, k));
   W.decompose(_p,_q,_s);
   if(xr.placed){
     holder.matrix.decompose(_p2,_q2,_s2);
-    const a = _p.distanceTo(_p2) > 0.05 ? 1 : 0.2;                        // 조금씩 보정해 떨림을 줄임
+    const a = (_p.distanceTo(_p2) > 0.05 || Math.abs(_s.x/_s2.x - 1) > 0.05) ? 1 : 0.2;   // 조금씩 보정해 떨림을 줄임
     _p2.lerp(_p,a); _q2.slerp(_q,a); holder.matrix.compose(_p2,_q2,_s);
   } else holder.matrix.copy(W);
   holder.visible = true; xr.placed = true;
   const px = Math.round(Math.hypot(m.corners[0].x-m.corners[1].x, m.corners[0].y-m.corners[1].y));
-  xrNote(dw.id+' · 축척 1:'+dw.scale+' · 마커 '+px+'px · 고정됨');
+  xrNote(dw.id+' · 축척 1:'+dw.scale+' · 마커 '+px+'px<br>'+(xr.k ? '고정됨 · 마커 실측 '+Math.round(dw.size*xr.k)+'mm (기준 '+dw.size+'mm)' : '크기 맞추는 중 · 기기를 좌우로 10cm쯤 움직여 주세요'));
 }
 
 async function loadPackage(){
